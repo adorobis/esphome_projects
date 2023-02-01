@@ -1,0 +1,182 @@
+substitutions:
+  device_name: streamer
+  friendly_name: Streamer Gaszowice
+  device_description: "Streamer Gaszowice"
+  streamer_url: "http://192.168.1.102"
+
+esphome:
+  name: '${device_name}'
+  platform: ESP8266
+  board: esp8285
+  esp8266_restore_from_flash: true
+  on_boot:
+    priority: 100
+    then:
+      - lambda: |-
+          id(preset_number).publish_state(id(preset));
+  
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Streamer Gaszowice Hotspot"
+    password: "!secret hotspot_password"
+
+captive_portal:
+
+# Enable logging
+logger:
+
+ota:
+  safe_mode: true
+  reboot_timeout: 10min
+  num_attempts: 5
+
+api:
+
+http_request:
+  useragent: esphome/device
+  timeout: 10s
+  id: http_request_data
+
+button:
+  - platform: restart
+    name: "${friendly_name} Restart"
+
+globals:
+  - id: preset
+    type: int
+    restore_value: yes
+    initial_value: '1'
+
+text_sensor:
+  - platform: version
+    hide_timestamp: true
+    name: "${friendly_name} ESPHome Version"
+  - platform: template
+    name: State
+    id: state
+
+binary_sensor:
+  - platform: template
+    name: Tured on
+    id: turned_on
+  - platform: gpio
+    pin:
+      number: GPIO0
+      inverted: true
+    name: "${friendly_name} Button"
+    on_press:
+      - switch.toggle: relay
+
+sensor:
+  - platform: template
+    name: API Request Code
+    id: request_code
+    accuracy_decimals: 0
+  - platform: template
+    name: Preset Number
+    id: preset_number
+    accuracy_decimals: 0
+  - platform: uptime
+    name: Uptime Sensor
+    update_interval: 30s
+    id: uptime_sensor
+    
+switch:
+  - platform: gpio
+    name: "${friendly_name} LED Red"
+    pin: GPIO13
+    inverted: true
+    restore_mode: ALWAYS_OFF
+    id: red_led
+
+  - platform: gpio
+    name: "${friendly_name} Relay"
+    pin: GPIO14
+    restore_mode: ALWAYS_ON
+    id: relay
+
+    on_turn_on:
+      - switch.turn_on: red_led
+
+    on_turn_off:
+      - switch.turn_off: red_led
+
+interval:
+  - interval: 60s
+    then:
+      - wait_until:
+          condition:
+            - lambda: 'return id(uptime_sensor).state > 90;'
+      - http_request.get:
+          url: "${streamer_url}/httpapi.asp?command=getPlayerStatus"
+          headers:
+            Content-Type: application/json
+          verify_ssl: false
+          on_response:
+            then:
+              - lambda: |-
+                  id(request_code).publish_state(status_code);
+              - if:
+                  condition:
+                    - lambda: 'return status_code != 200;'
+                  then:
+                    - switch.turn_off: relay
+                    - delay: 2000ms
+                    - switch.turn_on: relay
+                    - delay: 120s
+                    - http_request.get:
+                        url: !lambda |-
+                          return "${streamer_url}/httpapi.asp?command=MCUKeyShortClick:" + to_string(id(preset));
+                    - lambda: |-
+                        id(request_code).publish_state(status_code);
+                    - delay: 15s
+                    - http_request.get:
+                        url: "${streamer_url}/httpapi.asp?command=getPlayerStatus"
+                    - lambda: |-
+                        id(request_code).publish_state(status_code);
+                  else:
+                    - lambda: |-
+                        json::parse_json(id(http_request_data).get_string(), [](JsonObject root) {
+                            id(state).publish_state(root["status"]);
+                        });
+                    - if:
+                        condition:
+                          - lambda: 'return id(state).state != "play";'
+                        then:
+                          - http_request.get:
+                              url: !lambda |-
+                                return "${streamer_url}/httpapi.asp?command=MCUKeyShortClick:" + to_string(id(preset));
+                          - lambda: |-
+                              id(request_code).publish_state(status_code);
+                          - delay: 15s
+                          - http_request.get:
+                              url: "${streamer_url}/httpapi.asp?command=getPlayerStatus"
+                          - lambda: |-
+                              id(request_code).publish_state(status_code);
+                    
+              - lambda: |-
+                  json::parse_json(id(http_request_data).get_string(), [](JsonObject root) {
+                      id(state).publish_state(root["status"]);
+                  });
+              - lambda: |-
+                  json::parse_json(id(http_request_data).get_string(), [](JsonObject root) {
+                      if (root["Title"] == "526164696F204E6F7779205377696174" or root["Title"] == "556E6B6E6F776E" or root["Title"] == "" ) id(preset) = 1;
+                      if (root["Title"] == "526164696F20333537" ) id(preset) = 2;
+                      if (root["Title"] == "526164696F2042616F626162" ) id(preset) = 3;
+                      if (root["Title"] == "526F636B536572776973464D" ) id(preset) = 4;
+                      id(preset_number).publish_state(id(preset));
+                  });
+              
+              - lambda: |-
+                  json::parse_json(id(http_request_data).get_string(), [](JsonObject root) {
+                      if (root["status"] == "play") {
+                        id(turned_on).publish_state(true);
+                      }
+                      else {
+                        id(turned_on).publish_state(false);
+                      }
+                  });
+                     
+                
